@@ -13,6 +13,7 @@ import os
 from datetime import datetime, timedelta
 
 import pandas as pd
+import numpy as np
 from entsoe import EntsoePandasClient
 import knmi
 import meteoserver.weatherforecast as meteo
@@ -42,7 +43,8 @@ STATION_CODE = 260  # De Bilt
 MODEL_FILE = "nl_price_model_quarterly.pkl"
 CACHE_FILE = "nl_entsoe_knmi_merged.parquet"
 FORECAST_CACHE_FILE = "nl_meteoserver_forecast.parquet"
-WEEKS_TO_FETCH = 5
+WEEKS_TO_FETCH = 52
+TIMESERIES_N_SPLITS = 5  # Number of splits for TimeSeriesSplit cross-validation
 
 # ------------------------
 # 2. Data Loading Functions
@@ -65,15 +67,15 @@ def fetch_knmi_weather_quarterly(station, start, end):
         stations=[station],
         start=start,
         end=end,
-        variables=["TG", "RH", "SQ", "FHX"]
+        variables=["TX", "RH", "Q", "FHX"]
     )
-    df_daily["TG"] = df_daily["TG"] / 10.0
-    df_daily["RH"] = df_daily["RH"] / 10.0
-    df_daily["FHX"] = df_daily["FHX"] / 10.0
+    df_daily["TX"] = df_daily["TX"] / 10.0 # convert to °C
+    df_daily["RH"] = df_daily["RH"] / 10.0 # conver to mm
+    df_daily["FHX"] = df_daily["FHX"] / 10.0 # convert to m/s
     df_daily = df_daily.rename(columns={
-        "TG": "temp_avg",
-        "RH": "precip_mm",
-        "SQ": "sunshine_min",
+        "TX": "temperature",
+        "RH": "precipitation",
+        "Q": "sun_radiation", # in J/cm2
         "FHX": "wind_speed"
     })
 
@@ -111,9 +113,13 @@ def load_and_merge_data_quarterly(cache_file=CACHE_FILE, timezone="Europe/Amster
         raise ValueError("No overlapping data found. Check date ranges or API key.")
 
     # Feature Engineering
-    df['hour'] = df.index.hour
     df['day_of_week'] = df.index.dayofweek
-    df['month'] = df.index.month
+    df['season'] = df.index.month.map({
+        12: 0, 1: 0, 2: 0,    # winter
+        3: 1, 4: 1, 5: 1,     # spring
+        6: 2, 7: 2, 8: 2,     # summer
+        9: 3, 10: 3, 11: 3    # autumn
+    })
     df['is_weekend'] = df['day_of_week'].isin([5,6]).astype(int)
 
     for lag in [1, 2, 3, 96]:
@@ -137,8 +143,8 @@ def load_and_merge_data_quarterly(cache_file=CACHE_FILE, timezone="Europe/Amster
 def train_model_quarterly(df):
     print("Training model...")
     feature_cols = [
-        "temp_avg", "precip_mm", "sunshine_min", "wind_speed",
-        "hour", "day_of_week", "month", "is_weekend",
+        "temperature", "precipitation", "sun_radiation", "wind_speed",
+        "season", "day_of_week", "is_weekend",
         "price_lag_1", "price_lag_2", "price_lag_3", "price_lag_96",
         "price_ma_3", "price_ma_96", "price_std_96"
     ]
@@ -146,7 +152,7 @@ def train_model_quarterly(df):
     X = df[feature_cols]
     y = df['price_eur_mwh']
 
-    tscv = TimeSeriesSplit(n_splits=WEEKS_TO_FETCH)
+    tscv = TimeSeriesSplit(n_splits=TIMESERIES_N_SPLITS)
     maes = []
 
     for train_idx, test_idx in tscv.split(X):
@@ -175,7 +181,13 @@ def train_model_quarterly(df):
         random_state=42,
         verbose=-1
     )
-    final_model.fit(X, y)
+
+    # Define weights — more recent → higher weight
+    n = len(X)
+    decay = 0.05  # smaller = slower decay, larger = faster
+    weights = np.exp(np.linspace(-decay * n, 0, n))  # exponential weighting
+
+    final_model.fit(X, y, sample_weight=weights)
     joblib.dump(final_model, MODEL_FILE)
     print(f"Model saved to {MODEL_FILE}")
     print(f"Cross-validated MAE: {sum(maes)/len(maes):.2f} EUR/MWh")
@@ -187,19 +199,19 @@ def train_model_quarterly(df):
 # ------------------------
 def fetch_meteoserver_forecast(location, hours=48, cache_file=FORECAST_CACHE_FILE):
     # Check if cached forecast exists
-    if os.path.exists(cache_file):
-        print(f"Loading cached forecast from {cache_file}...")
-        forecast_df = pd.read_parquet(cache_file)
-        # Filter only the next `hours` for consistency
-        forecast_df = forecast_df[forecast_df.index <= pd.Timestamp.now() + pd.Timedelta(hours=hours)]
-        forecast_df =  normalize_to_utc(forecast_df)
-        return forecast_df
+    #if os.path.exists(cache_file):
+    #    print(f"Loading cached forecast from {cache_file}...")
+    #    forecast_df = pd.read_parquet(cache_file)
+    #    # Filter only the next `hours` for consistency
+    #    forecast_df = forecast_df[forecast_df.index <= pd.Timestamp.now() + pd.Timedelta(hours=hours)]
+    #    forecast_df =  normalize_to_utc(forecast_df)
+    #    return forecast_df
 
     print("No cached forecast found. Fetching from Meteoserver API...")
     forecast_df = meteo.read_json_url_weatherforecast(
         key=METEOSERVER_API_KEY,
         location=location,
-        model='GFS'
+        model='HARMONIE'
     )
 
     forecast_df['tijd'] = pd.to_datetime(forecast_df['tijd'], unit='s')
@@ -207,24 +219,24 @@ def fetch_meteoserver_forecast(location, hours=48, cache_file=FORECAST_CACHE_FIL
     forecast_df = forecast_df[forecast_df.index <= pd.Timestamp.now() + pd.Timedelta(hours=hours)]
 
     forecast_df = forecast_df.rename(columns={
-        'temp2m': 'temp_avg',
-        'neerslag': 'precip_mm',
-        'windsnelheid10m': 'wind_speed',
-        'zonuren': 'sunshine_min'
+        'temp': 'temperature',
+        'neersl': 'precipitation',
+        'windkmh': 'wind_speed',
+        'gr': 'sun_radiation'
     })
+    
 
-    for col in ["temp_avg", "precip_mm", "wind_speed", "sunshine_min"]:
+    for col in ["temperature", "precipitation", "wind_speed", "sun_radiation"]:
         if col not in forecast_df.columns:
             forecast_df[col] = 0
         forecast_df[col] = pd.to_numeric(forecast_df[col], errors='coerce')
 
-    forecast_df = forecast_df[['temp_avg', 'precip_mm', 'wind_speed', 'sunshine_min']].iloc[:hours].asfreq(pd.tseries.offsets.Minute(15),'ffill')
+    forecast_df = forecast_df[['temperature', 'precipitation', 'wind_speed', 'sun_radiation']].iloc[:hours].asfreq(pd.tseries.offsets.Minute(15),'ffill')
 
     # Save to cache
     forecast_df.to_parquet(cache_file)
     forecast_df =  normalize_to_utc(forecast_df)
     print(f"Forecast saved to cache: {cache_file}")
-    print(forecast_df.tail())
 
     return forecast_df
 
@@ -237,9 +249,13 @@ def predict_future_2days_with_actuals(model, df_hist, hours=48, timezone=tzlocal
     future_weather = fetch_meteoserver_forecast(LOCATION, hours=hours)
 
     # Add temporal features
-    future_weather['hour'] = future_weather.index.hour
     future_weather['day_of_week'] = future_weather.index.dayofweek
-    future_weather['month'] = future_weather.index.month
+    future_weather['season'] = future_weather.index.month.map({
+        12: 0, 1: 0, 2: 0,    # winter
+        3: 1, 4: 1, 5: 1,     # spring
+        6: 2, 7: 2, 8: 2,     # summer
+        9: 3, 10: 3, 11: 3    # autumn
+    })
     future_weather['is_weekend'] = future_weather['day_of_week'].isin([5,6]).astype(int)
 
     # Actual day-ahead prices 
@@ -273,13 +289,12 @@ def predict_future_2days_with_actuals(model, df_hist, hours=48, timezone=tzlocal
             pred = actual_prices.loc[idx]
         else:
             X = pd.DataFrame([{
-                "temp_avg": row['temp_avg'],
-                "precip_mm": row['precip_mm'],
-                "sunshine_min": row['sunshine_min'],
+                "temperature": row['temperature'],
+                "precipitation": row['precipitation'],
+                "sun_radiation": row['sun_radiation'],
                 "wind_speed": row['wind_speed'],
-                "hour": row['hour'],
                 "day_of_week": row['day_of_week'],
-                "month": row['month'],
+                "season": row['season'],
                 "is_weekend": row['is_weekend'],
                 "price_lag_1": lag_1,
                 "price_lag_2": lag_2,
@@ -353,9 +368,9 @@ def predict_future_2days_with_bias_correction(model, df_hist, hours=48, timezone
         std_96 = pd.Series(rolling_96[-96:]).std()
 
         X = pd.DataFrame([{
-            "temp_avg": row['temp_avg'],
-            "precip_mm": row['precip_mm'],
-            "sunshine_min": row['sunshine_min'],
+            "temperature": row['temperature'],
+            "precipitation": row['precipitation'],
+            "sun_radiation": row['sun_radiation'],
             "wind_speed": row['wind_speed'],
             "hour": row['hour'],
             "day_of_week": row['day_of_week'],
