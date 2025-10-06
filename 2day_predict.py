@@ -4,7 +4,7 @@ Quarterly Electricity Price Prediction for the Netherlands
 - KNMI Historical Weather Data (forward-filled)
 - Meteoserver.nl GFS Forecast for 48-hour prediction
 - LightGBM Model
-- Iterative 2-Day Forecast Using Meteoserver GFS
+- Iterative 2-Day Forecast Using Meteoserver GFS + Actual Prices
 - Predicted prices shown in EUR/kWh
 """
 
@@ -19,6 +19,7 @@ from sklearn.metrics import mean_absolute_error
 import joblib
 import os
 from datetime import datetime, timedelta
+import tzlocal
 
 warnings.filterwarnings("ignore")
 
@@ -28,7 +29,6 @@ warnings.filterwarnings("ignore")
 ENTSOE_API_KEY = os.getenv("ENTSOE_API_KEY")
 if not ENTSOE_API_KEY:
     raise ValueError("Please set the ENTSOE_API_KEY environment variable.")
-ENTSOE_API_KEY = os.getenv("ENTSOE_API_KEY")
 METEOSERVER_API_KEY = os.getenv("METEOSERVER_API_KEY")
 if not METEOSERVER_API_KEY:
     raise ValueError("Please set the METEOSERVER_API_KEY environment variable.")
@@ -51,6 +51,9 @@ def fetch_entsoe_prices_quarterly(api_key, country_code, start, end):
     prices = client.query_day_ahead_prices(country_code, start=start, end=end)
     prices = prices.rename("price_eur_mwh").to_frame()
     prices = prices.asfreq(pd.tseries.offsets.Minute(15),'ffill')
+
+    # Convert to local timezone
+    prices = normalize_to_utc(prices)
 
     return prices
 
@@ -79,10 +82,11 @@ def fetch_knmi_weather_quarterly(station, start, end):
     for col in df_daily.columns:
         df_hourly[col] = df_daily[col].reindex(df_hourly.index, method='ffill')
 
+    df_hourly = normalize_to_utc(df_hourly)
     return df_hourly.asfreq(pd.tseries.offsets.Minute(15),'ffill')
 
  
-def load_and_merge_data_quarterly(cache_file=CACHE_FILE):
+def load_and_merge_data_quarterly(cache_file=CACHE_FILE, timezone="Europe/Amsterdam"):
     # Check if cached file exists
     if os.path.exists(cache_file):
         print(f"Loading cached merged data from {cache_file}...")
@@ -91,10 +95,10 @@ def load_and_merge_data_quarterly(cache_file=CACHE_FILE):
 
     print("No cached data found. Fetching from APIs...")
 
-    today_entso = pd.Timestamp.today(tz="Europe/Amsterdam")
+    today_entso = pd.Timestamp.today(tz=timezone)
     today_knmi = datetime.today().strftime("%Y%m%d")
 
-    start_entsoe = pd.Timestamp.today(tz="Europe/Amsterdam") - pd.Timedelta(days=365)
+    start_entsoe = pd.Timestamp.today(tz=timezone) - pd.Timedelta(days=365)
     start_knmi = (datetime.today() - timedelta(days=365)).strftime("%Y%m%d")
 
     prices = fetch_entsoe_prices_quarterly(ENTSOE_API_KEY, COUNTRY_CODE, start_entsoe, today_entso)
@@ -214,18 +218,18 @@ def fetch_meteoserver_forecast(location, hours=48, cache_file=FORECAST_CACHE_FIL
     forecast_df = forecast_df[['temp_avg', 'precip_mm', 'wind_speed', 'sunshine_min']].iloc[:hours].asfreq(pd.tseries.offsets.Minute(15),'ffill')
 
     # Save to cache
+    forecast_df =  normalize_to_utc(forecast_df)
     forecast_df.to_parquet(cache_file)
     print(f"Forecast saved to cache: {cache_file}")
 
     return forecast_df
 
 # ------------------------
-# 5. Iterative 2-Day Forecast
+# 5. Iterative 2-Day Forecast with Actuals
 # ------------------------
-def predict_future_2days_iterative(model, df_hist, hours=48):
-    print(f"Predicting next {hours} hours...")
+def predict_future_2days_with_actuals(model, df_hist, hours=48, timezone=tzlocal.get_localzone()):
+    print(f"Predicting next {hours} hours with actual day-ahead prices...")
 
-    # Fetch forecast (cached if available)
     future_weather = fetch_meteoserver_forecast(LOCATION, hours=hours)
 
     # Add temporal features
@@ -234,7 +238,22 @@ def predict_future_2days_iterative(model, df_hist, hours=48):
     future_weather['month'] = future_weather.index.month
     future_weather['is_weekend'] = future_weather['day_of_week'].isin([5,6]).astype(int)
 
-    # Initialize lags from last historical row
+    # Actual day-ahead prices for first 24 hours
+    start_da = future_weather.index.min()
+    end_da = start_da + pd.Timedelta(hours=24)
+    # Ensure start and end are timezone-aware
+    if start_da.tzinfo is None:
+        start_da = start_da.tz_localize(timezone)
+    if end_da.tzinfo is None:
+        end_da = end_da.tz_localize(timezone)
+
+    actual_prices = fetch_entsoe_prices_quarterly(
+        ENTSOE_API_KEY, COUNTRY_CODE, start=start_da, end=end_da
+    ).asfreq(pd.tseries.offsets.Minute(15),'ffill')['price_eur_mwh']
+
+    actual_prices = normalize_to_utc(actual_prices)
+
+    # Initialize lags
     last_row = df_hist.iloc[-1]
     lag_1 = last_row['price_eur_mwh']
     lag_2 = last_row['price_lag_1']
@@ -248,25 +267,28 @@ def predict_future_2days_iterative(model, df_hist, hours=48):
         ma_96 = sum(rolling_96[-96:]) / 96
         std_96 = pd.Series(rolling_96[-96:]).std()
 
-        X = pd.DataFrame([{
-            "temp_avg": row['temp_avg'],
-            "precip_mm": row['precip_mm'],
-            "sunshine_min": row['sunshine_min'],
-            "wind_speed": row['wind_speed'],
-            "hour": row['hour'],
-            "day_of_week": row['day_of_week'],
-            "month": row['month'],
-            "is_weekend": row['is_weekend'],
-            "price_lag_1": lag_1,
-            "price_lag_2": lag_2,
-            "price_lag_3": lag_3,
-            "price_lag_96": rolling_96[-96],
-            "price_ma_3": ma_3,
-            "price_ma_96": ma_96,
-            "price_std_96": std_96
-        }])
+        if idx in actual_prices.index:
+            pred = actual_prices.loc[idx]
+        else:
+            X = pd.DataFrame([{
+                "temp_avg": row['temp_avg'],
+                "precip_mm": row['precip_mm'],
+                "sunshine_min": row['sunshine_min'],
+                "wind_speed": row['wind_speed'],
+                "hour": row['hour'],
+                "day_of_week": row['day_of_week'],
+                "month": row['month'],
+                "is_weekend": row['is_weekend'],
+                "price_lag_1": lag_1,
+                "price_lag_2": lag_2,
+                "price_lag_3": lag_3,
+                "price_lag_96": rolling_96[-96],
+                "price_ma_3": ma_3,
+                "price_ma_96": ma_96,
+                "price_std_96": std_96
+            }])
+            pred = model.predict(X)[0]
 
-        pred = model.predict(X)[0]
         predicted_prices.append(pred)
 
         # Update lags and rolling window
@@ -278,7 +300,33 @@ def predict_future_2days_iterative(model, df_hist, hours=48):
 
     # Convert to EUR/kWh
     future_weather['predicted_price_eur_kwh'] = [p / 1000 for p in predicted_prices]
+
+    future_weather.index = future_weather.index.tz_convert(timezone)
+
     return future_weather[['predicted_price_eur_kwh']]
+
+
+def normalize_to_utc(df, totimezone="UTC"):
+    """
+    Converts all datetime columns in a pandas DataFrame to UTC timezone.
+    
+    Parameters:
+        df (pd.DataFrame): Input DataFrame
+    
+    Returns:
+        pd.DataFrame: DataFrame with all datetime columns converted to UTC
+    """
+    df = df.copy()  # avoid modifying the original DataFrame
+    local_tz = tzlocal.get_localzone()
+    
+    # Convert index if it's a datetime index
+    if isinstance(df.index, pd.DatetimeIndex):
+        if df.index.tz is None:
+            df.index = df.index.tz_localize(local_tz)
+        
+        df.index = df.index.tz_convert(totimezone)
+
+    return df
 
 # ------------------------
 # 6. Main Function
@@ -286,15 +334,15 @@ def predict_future_2days_iterative(model, df_hist, hours=48):
 def main():
     # Load historical data
     df = load_and_merge_data_quarterly()
-    print(f"Loaded dataset with {len(df)} quarterly entries.")
+    print(f"Loaded dataset with {len(df)} entries.")
 
-    # Train model
     model = train_model_quarterly(df)
 
     # Future 48-hour forecast
-    future_preds = predict_future_2days_iterative(model,df)
-    print("\nPredictions for the next 48 hours based on Meteoserver GFS forecast in EUR/kWh:")
+    future_preds = predict_future_2days_with_actuals(model, df)
+    print("\nPredictions for the next 48 hours (EUR/kWh):")
     print(future_preds.round(4))
+
     future_preds.to_csv("nl_price_forecast_2days_quarterly.csv")
     print("\nForecast saved to nl_price_forecast_2days_quarterly.csv")
 
