@@ -266,27 +266,109 @@ def predict_future_2days_with_actuals(model, df_hist, hours=48, timezone=tzlocal
         ma_96 = sum(rolling_96[-96:]) / 96
         std_96 = pd.Series(rolling_96[-96:]).std()
 
-        if idx in actual_prices.index:
-            pred = actual_prices.loc[idx]
-        else:
-            X = pd.DataFrame([{
-                "temp_avg": row['temp_avg'],
-                "precip_mm": row['precip_mm'],
-                "sunshine_min": row['sunshine_min'],
-                "wind_speed": row['wind_speed'],
-                "hour": row['hour'],
-                "day_of_week": row['day_of_week'],
-                "month": row['month'],
-                "is_weekend": row['is_weekend'],
-                "price_lag_1": lag_1,
-                "price_lag_2": lag_2,
-                "price_lag_3": lag_3,
-                "price_lag_96": rolling_96[-96],
-                "price_ma_3": ma_3,
-                "price_ma_96": ma_96,
-                "price_std_96": std_96
-            }])
-            pred = model.predict(X)[0]
+        X = pd.DataFrame([{
+            "temp_avg": row['temp_avg'],
+            "precip_mm": row['precip_mm'],
+            "sunshine_min": row['sunshine_min'],
+            "wind_speed": row['wind_speed'],
+            "hour": row['hour'],
+            "day_of_week": row['day_of_week'],
+            "month": row['month'],
+            "is_weekend": row['is_weekend'],
+            "price_lag_1": lag_1,
+            "price_lag_2": lag_2,
+            "price_lag_3": lag_3,
+            "price_lag_96": rolling_96[-96],
+            "price_ma_3": ma_3,
+            "price_ma_96": ma_96,
+            "price_std_96": std_96
+        }])
+        pred = model.predict(X)[0]
+        predicted_prices.append(pred)
+
+        # Update lags and rolling window
+        lag_3, lag_2, lag_1 = lag_2, lag_1, pred
+        rolling_96.append(pred)
+        if len(rolling_96) > 96:
+            rolling_96 = rolling_96[-96:]
+        ma_3 = (lag_1 + lag_2 + lag_3) / 3
+
+
+    # Convert to EUR/kWh
+    future_weather['predicted_price_eur_kwh'] = [p / 1000 for p in predicted_prices]
+    future_weather['actual_price_eur_kwh'] = actual_prices.reindex(future_weather.index).fillna(pd.NA) / 1000
+
+
+    future_weather.index = future_weather.index.tz_convert(timezone)
+
+    return future_weather[['predicted_price_eur_kwh', 'actual_price_eur_kwh']]
+
+def predict_future_2days_with_bias_correction(model, df_hist, hours=48, timezone=tzlocal.get_localzone(), alpha=0.3, error_window=96):
+    """
+    Predicts future prices and adjusts predictions using the deviation between predicted and actual prices.
+    
+    Parameters:
+        model: trained LightGBM model
+        df_hist: historical dataframe with features
+        hours: number of hours to predict
+        alpha: adjustment factor for bias correction
+        error_window: number of past 15-min intervals to compute mean error (default 24h = 96 intervals)
+    """
+    future_weather = fetch_meteoserver_forecast(LOCATION, hours=hours)
+
+    future_weather['hour'] = future_weather.index.hour
+    future_weather['day_of_week'] = future_weather.index.dayofweek
+    future_weather['month'] = future_weather.index.month
+    future_weather['is_weekend'] = future_weather['day_of_week'].isin([5,6]).astype(int)
+
+    start_da = future_weather.index.min()
+    end_da = start_da + pd.Timedelta(hours=hours)
+    start_da = start_da.tz_convert(timezone)
+    end_da = end_da.tz_convert(timezone)
+
+    actual_prices = fetch_entsoe_prices_quarterly(
+        ENTSOE_API_KEY, COUNTRY_CODE, start=start_da, end=end_da
+    ).asfreq(pd.tseries.offsets.Minute(15),'ffill')['price_eur_mwh']
+    actual_prices = normalize_to_utc(actual_prices)
+
+    # Initialize lags
+    last_row = df_hist.iloc[-1]
+    lag_1 = last_row['price_eur_mwh']
+    lag_2 = last_row['price_lag_1']
+    lag_3 = last_row['price_lag_2']
+    rolling_96 = list(df_hist['price_eur_mwh'].iloc[-96:])
+    ma_3 = last_row['price_ma_3']
+
+    predicted_prices = []
+    recent_errors = []
+
+    for idx, row in future_weather.iterrows():
+        ma_96 = sum(rolling_96[-96:]) / 96
+        std_96 = pd.Series(rolling_96[-96:]).std()
+
+        X = pd.DataFrame([{
+            "temp_avg": row['temp_avg'],
+            "precip_mm": row['precip_mm'],
+            "sunshine_min": row['sunshine_min'],
+            "wind_speed": row['wind_speed'],
+            "hour": row['hour'],
+            "day_of_week": row['day_of_week'],
+            "month": row['month'],
+            "is_weekend": row['is_weekend'],
+            "price_lag_1": lag_1,
+            "price_lag_2": lag_2,
+            "price_lag_3": lag_3,
+            "price_lag_96": rolling_96[-96],
+            "price_ma_3": ma_3,
+            "price_ma_96": ma_96,
+            "price_std_96": std_96
+        }])
+        pred = model.predict(X)[0]
+
+        # Apply bias correction based on recent errors
+        if recent_errors:
+            bias = alpha * (sum(recent_errors[-error_window:]) / len(recent_errors[-error_window:]))
+            pred += bias
 
         predicted_prices.append(pred)
 
@@ -297,13 +379,16 @@ def predict_future_2days_with_actuals(model, df_hist, hours=48, timezone=tzlocal
             rolling_96 = rolling_96[-96:]
         ma_3 = (lag_1 + lag_2 + lag_3) / 3
 
-    # Convert to EUR/kWh
+        # Update recent errors if actual price exists
+        if idx in actual_prices.index:
+            recent_errors.append(actual_prices.loc[idx] - pred)
+
     future_weather['predicted_price_eur_kwh'] = [p / 1000 for p in predicted_prices]
+    future_weather['actual_price_eur_kwh'] = actual_prices.reindex(future_weather.index).fillna(pd.NA) / 1000
 
     future_weather.index = future_weather.index.tz_convert(timezone)
 
-    return future_weather[['predicted_price_eur_kwh']]
-
+    return future_weather[['predicted_price_eur_kwh', 'actual_price_eur_kwh']]
 
 def normalize_to_utc(df, totimezone="UTC"):
     """
@@ -340,6 +425,11 @@ def main():
     # Future 48-hour forecast
     future_preds = predict_future_2days_with_actuals(model, df)
     print("\nPredictions for the next 48 hours (EUR/kWh):")
+    print(future_preds.round(4))
+
+
+    future_preds = predict_future_2days_with_bias_correction(model, df)
+    print("\nPredictions for the next 48 hours with bias correction (EUR/kWh):")
     print(future_preds.round(4))
 
     future_preds.to_csv("nl_price_forecast_2days_quarterly.csv")
