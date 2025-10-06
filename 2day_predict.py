@@ -98,8 +98,8 @@ def load_and_merge_data_quarterly(cache_file=CACHE_FILE, timezone="Europe/Amster
     today_entso = pd.Timestamp.today(tz=timezone)
     today_knmi = datetime.today().strftime("%Y%m%d")
 
-    start_entsoe = pd.Timestamp.today(tz=timezone) - pd.Timedelta(days=365)
-    start_knmi = (datetime.today() - timedelta(days=365)).strftime("%Y%m%d")
+    start_entsoe = pd.Timestamp.today(tz=timezone) - pd.Timedelta(days=30)
+    start_knmi = (datetime.today() - timedelta(days=30)).strftime("%Y%m%d")
 
     prices = fetch_entsoe_prices_quarterly(ENTSOE_API_KEY, COUNTRY_CODE, start_entsoe, today_entso)
     weather = fetch_knmi_weather_quarterly(STATION_CODE, start_knmi, today_knmi)
@@ -144,7 +144,7 @@ def train_model_quarterly(df):
     X = df[feature_cols]
     y = df['price_eur_mwh']
 
-    tscv = TimeSeriesSplit(n_splits=5)
+    tscv = TimeSeriesSplit(n_splits=10)
     maes = []
 
     for train_idx, test_idx in tscv.split(X):
