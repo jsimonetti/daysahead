@@ -190,6 +190,7 @@ def fetch_meteoserver_forecast(location, hours=48, cache_file=FORECAST_CACHE_FIL
         forecast_df = pd.read_parquet(cache_file)
         # Filter only the next `hours` for consistency
         forecast_df = forecast_df[forecast_df.index <= pd.Timestamp.now() + pd.Timedelta(hours=hours)]
+        forecast_df =  normalize_to_utc(forecast_df)
         return forecast_df
 
     print("No cached forecast found. Fetching from Meteoserver API...")
@@ -218,8 +219,8 @@ def fetch_meteoserver_forecast(location, hours=48, cache_file=FORECAST_CACHE_FIL
     forecast_df = forecast_df[['temp_avg', 'precip_mm', 'wind_speed', 'sunshine_min']].iloc[:hours].asfreq(pd.tseries.offsets.Minute(15),'ffill')
 
     # Save to cache
-    forecast_df =  normalize_to_utc(forecast_df)
     forecast_df.to_parquet(cache_file)
+    forecast_df =  normalize_to_utc(forecast_df)
     print(f"Forecast saved to cache: {cache_file}")
 
     return forecast_df
