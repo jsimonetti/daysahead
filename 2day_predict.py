@@ -1,5 +1,5 @@
 """
-Hourly Electricity Price Prediction for the Netherlands
+Quarterly Electricity Price Prediction for the Netherlands
 - ENTSO-E Hourly Day-Ahead Prices
 - KNMI Historical Weather Data (forward-filled)
 - Meteoserver.nl GFS Forecast for 48-hour prediction
@@ -38,20 +38,22 @@ if not LOCATION:
 
 COUNTRY_CODE = "NL"
 STATION_CODE = 260  # De Bilt
-START_DATE = "20240101"
-MODEL_FILE = "nl_price_model_hourly.pkl"
+MODEL_FILE = "nl_price_model_quarterly.pkl"
 
 # ------------------------
 # 2. Data Loading Functions
 # ------------------------
-def fetch_entsoe_prices_hourly(api_key, country_code, start, end):
+def fetch_entsoe_prices_quarterly(api_key, country_code, start, end):
+    print("Fetching ENTSO-E historical data...")
     client = EntsoePandasClient(api_key=api_key)
     prices = client.query_day_ahead_prices(country_code, start=start, end=end)
     prices = prices.rename("price_eur_mwh").to_frame()
-    prices = prices.asfreq("H")
+    prices = prices.asfreq(pd.tseries.offsets.Minute(15),'ffill')
+
     return prices
 
-def fetch_knmi_weather_hourly(station, start, end):
+def fetch_knmi_weather_quarterly(station, start, end):
+    print("Fetching KNMI historical data...")
     df_daily = knmi.get_day_data_dataframe(
         stations=[station],
         start=start,
@@ -75,17 +77,16 @@ def fetch_knmi_weather_hourly(station, start, end):
     for col in df_daily.columns:
         df_hourly[col] = df_daily[col].reindex(df_hourly.index, method='ffill')
 
-    return df_hourly
+    return df_hourly.asfreq(pd.tseries.offsets.Minute(15),'ffill')
 
-def load_and_merge_data_hourly():
-    print("Fetching ENTSO-E and KNMI historical data...")
+def load_and_merge_data_quarterly():
+    today_entso = pd.Timestamp.today(tz="Europe/Amsterdam")
+    today_knmi = datetime.today().strftime("%Y%m%d")
 
-    yesterday_pd = pd.Timestamp.today(tz="Europe/Amsterdam") - pd.Timedelta(days=0)
-    yesterday_knmi = (datetime.today() - timedelta(days=0)).strftime("%Y%m%d")
-
-    start_entsoe = pd.Timestamp(START_DATE, tz="Europe/Amsterdam")
-    prices = fetch_entsoe_prices_hourly(ENTSOE_API_KEY, COUNTRY_CODE, start_entsoe, yesterday_pd)
-    weather = fetch_knmi_weather_hourly(STATION_CODE, START_DATE, yesterday_knmi)
+    start_entsoe = pd.Timestamp.today(tz="Europe/Amsterdam") - pd.Timedelta(days=365)
+    start_knmi = (datetime.today() - timedelta(days=365)).strftime("%Y%m%d")
+    prices = fetch_entsoe_prices_quarterly(ENTSOE_API_KEY, COUNTRY_CODE, start_entsoe, today_entso)
+    weather = fetch_knmi_weather_quarterly(STATION_CODE, start_knmi, today_knmi)
 
     df = prices.join(weather, how="inner").dropna()
     if df.empty:
@@ -97,12 +98,12 @@ def load_and_merge_data_hourly():
     df['month'] = df.index.month
     df['is_weekend'] = df['day_of_week'].isin([5,6]).astype(int)
 
-    for lag in [1, 2, 3, 24]:
+    for lag in [1, 2, 3, 96]:
         df[f'price_lag_{lag}'] = df['price_eur_mwh'].shift(lag)
 
     df['price_ma_3'] = df['price_eur_mwh'].shift(1).rolling(window=3).mean()
-    df['price_ma_24'] = df['price_eur_mwh'].shift(1).rolling(window=24).mean()
-    df['price_std_24'] = df['price_eur_mwh'].shift(1).rolling(window=24).std()
+    df['price_ma_96'] = df['price_eur_mwh'].shift(1).rolling(window=96).mean()
+    df['price_std_96'] = df['price_eur_mwh'].shift(1).rolling(window=96).std()
 
     df = df.dropna()
     return df
@@ -110,12 +111,13 @@ def load_and_merge_data_hourly():
 # ------------------------
 # 3. Train & Evaluate Model
 # ------------------------
-def train_model_hourly(df):
+def train_model_quarterly(df):
+    print("Training model...")
     feature_cols = [
         "temp_avg", "precip_mm", "sunshine_min", "wind_speed",
         "hour", "day_of_week", "month", "is_weekend",
-        "price_lag_1", "price_lag_2", "price_lag_3", "price_lag_24",
-        "price_ma_3", "price_ma_24", "price_std_24"
+        "price_lag_1", "price_lag_2", "price_lag_3", "price_lag_96",
+        "price_ma_3", "price_ma_96", "price_std_96"
     ]
 
     X = df[feature_cols]
@@ -161,6 +163,7 @@ def train_model_hourly(df):
 # 4. Fetch Meteoserver GFS Forecast
 # ------------------------
 def fetch_meteoserver_forecast(location, hours=48):
+    print("Fetching Meteoserver forecast data...")
     forecast_df = meteo.read_json_url_weatherforecast(
         key=METEOSERVER_API_KEY,
         location=location,
@@ -183,12 +186,13 @@ def fetch_meteoserver_forecast(location, hours=48):
             forecast_df[col] = 0
         forecast_df[col] = pd.to_numeric(forecast_df[col], errors='coerce')
 
-    return forecast_df[['temp_avg', 'precip_mm', 'wind_speed', 'sunshine_min']].iloc[:hours]
+    return forecast_df[['temp_avg', 'precip_mm', 'wind_speed', 'sunshine_min']].iloc[:hours].asfreq(pd.tseries.offsets.Minute(15),'ffill')
 
 # ------------------------
 # 5. Iterative 2-Day Forecast
 # ------------------------
 def predict_future_2days_iterative(model,df_hist):
+    print("Predicting next 2 days...")
     future_weather = fetch_meteoserver_forecast(LOCATION, hours=48)
     future_weather['hour'] = future_weather.index.hour
     future_weather['day_of_week'] = future_weather.index.dayofweek
@@ -201,14 +205,14 @@ def predict_future_2days_iterative(model,df_hist):
     lag_2 = last_row['price_lag_1']
     lag_3 = last_row['price_lag_2']
 
-    rolling_24 = list(df_hist['price_eur_mwh'].iloc[-24:])
+    rolling_96 = list(df_hist['price_eur_mwh'].iloc[-96:])
     ma_3 = last_row['price_ma_3']
 
     predicted_prices = []
 
     for idx, row in future_weather.iterrows():
-        ma_24 = sum(rolling_24[-24:]) / 24
-        std_24 = pd.Series(rolling_24[-24:]).std()
+        ma_96 = sum(rolling_96[-96:]) / 96
+        std_96 = pd.Series(rolling_96[-96:]).std()
 
         X = pd.DataFrame([{
             "temp_avg": row['temp_avg'],
@@ -222,19 +226,19 @@ def predict_future_2days_iterative(model,df_hist):
             "price_lag_1": lag_1,
             "price_lag_2": lag_2,
             "price_lag_3": lag_3,
-            "price_lag_24": rolling_24[-24],
+            "price_lag_96": rolling_96[-96],
             "price_ma_3": ma_3,
-            "price_ma_24": ma_24,
-            "price_std_24": std_24
+            "price_ma_96": ma_96,
+            "price_std_96": std_96
         }])
 
         pred = model.predict(X)[0]
         predicted_prices.append(pred)
 
         lag_3, lag_2, lag_1 = lag_2, lag_1, pred
-        rolling_24.append(pred)
-        if len(rolling_24) > 24:
-            rolling_24 = rolling_24[-24:]
+        rolling_96.append(pred)
+        if len(rolling_96) > 96:
+            rolling_96 = rolling_96[-96:]
         ma_3 = (lag_1 + lag_2 + lag_3) / 3
 
     # Convert to EUR/kWh
@@ -246,16 +250,18 @@ def predict_future_2days_iterative(model,df_hist):
 # ------------------------
 def main():
     # Load historical data
-    df = load_and_merge_data_hourly()
-    print(f"Loaded dataset with {len(df)} hourly entries.")
+    df = load_and_merge_data_quarterly()
+    print(f"Loaded dataset with {len(df)} quarterly entries.")
 
     # Train model
-    model = train_model_hourly(df)
+    model = train_model_quarterly(df)
 
     # Future 48-hour forecast
     future_preds = predict_future_2days_iterative(model,df)
     print("\nPredictions for the next 48 hours based on Meteoserver GFS forecast in EUR/kWh:")
     print(future_preds.round(4))
+    future_preds.to_csv("nl_price_forecast_2days_quarterly.csv")
+    print("\nForecast saved to nl_price_forecast_2days_quarterly.csv")
 
 # ------------------------
 # 7. Script Entry Point
