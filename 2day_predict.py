@@ -39,6 +39,8 @@ if not LOCATION:
 COUNTRY_CODE = "NL"
 STATION_CODE = 260  # De Bilt
 MODEL_FILE = "nl_price_model_quarterly.pkl"
+CACHE_FILE = "nl_entsoe_knmi_merged.parquet"
+FORECAST_CACHE_FILE = "nl_meteoserver_forecast.parquet"
 
 # ------------------------
 # 2. Data Loading Functions
@@ -79,12 +81,22 @@ def fetch_knmi_weather_quarterly(station, start, end):
 
     return df_hourly.asfreq(pd.tseries.offsets.Minute(15),'ffill')
 
-def load_and_merge_data_quarterly():
+ 
+def load_and_merge_data_quarterly(cache_file=CACHE_FILE):
+    # Check if cached file exists
+    if os.path.exists(cache_file):
+        print(f"Loading cached merged data from {cache_file}...")
+        df = pd.read_parquet(cache_file)
+        return df
+
+    print("No cached data found. Fetching from APIs...")
+
     today_entso = pd.Timestamp.today(tz="Europe/Amsterdam")
     today_knmi = datetime.today().strftime("%Y%m%d")
 
     start_entsoe = pd.Timestamp.today(tz="Europe/Amsterdam") - pd.Timedelta(days=365)
     start_knmi = (datetime.today() - timedelta(days=365)).strftime("%Y%m%d")
+
     prices = fetch_entsoe_prices_quarterly(ENTSOE_API_KEY, COUNTRY_CODE, start_entsoe, today_entso)
     weather = fetch_knmi_weather_quarterly(STATION_CODE, start_knmi, today_knmi)
 
@@ -106,6 +118,11 @@ def load_and_merge_data_quarterly():
     df['price_std_96'] = df['price_eur_mwh'].shift(1).rolling(window=96).std()
 
     df = df.dropna()
+
+    # Save to cache
+    df.to_parquet(cache_file)
+    print(f"Merged data saved to cache: {cache_file}")
+
     return df
 
 # ------------------------
@@ -162,8 +179,16 @@ def train_model_quarterly(df):
 # ------------------------
 # 4. Fetch Meteoserver GFS Forecast
 # ------------------------
-def fetch_meteoserver_forecast(location, hours=48):
-    print("Fetching Meteoserver forecast data...")
+def fetch_meteoserver_forecast(location, hours=48, cache_file=FORECAST_CACHE_FILE):
+    # Check if cached forecast exists
+    if os.path.exists(cache_file):
+        print(f"Loading cached forecast from {cache_file}...")
+        forecast_df = pd.read_parquet(cache_file)
+        # Filter only the next `hours` for consistency
+        forecast_df = forecast_df[forecast_df.index <= pd.Timestamp.now() + pd.Timedelta(hours=hours)]
+        return forecast_df
+
+    print("No cached forecast found. Fetching from Meteoserver API...")
     forecast_df = meteo.read_json_url_weatherforecast(
         key=METEOSERVER_API_KEY,
         location=location,
@@ -186,25 +211,34 @@ def fetch_meteoserver_forecast(location, hours=48):
             forecast_df[col] = 0
         forecast_df[col] = pd.to_numeric(forecast_df[col], errors='coerce')
 
-    return forecast_df[['temp_avg', 'precip_mm', 'wind_speed', 'sunshine_min']].iloc[:hours].asfreq(pd.tseries.offsets.Minute(15),'ffill')
+    forecast_df = forecast_df[['temp_avg', 'precip_mm', 'wind_speed', 'sunshine_min']].iloc[:hours].asfreq(pd.tseries.offsets.Minute(15),'ffill')
+
+    # Save to cache
+    forecast_df.to_parquet(cache_file)
+    print(f"Forecast saved to cache: {cache_file}")
+
+    return forecast_df
 
 # ------------------------
 # 5. Iterative 2-Day Forecast
 # ------------------------
-def predict_future_2days_iterative(model,df_hist):
-    print("Predicting next 2 days...")
-    future_weather = fetch_meteoserver_forecast(LOCATION, hours=48)
+def predict_future_2days_iterative(model, df_hist, hours=48):
+    print(f"Predicting next {hours} hours...")
+
+    # Fetch forecast (cached if available)
+    future_weather = fetch_meteoserver_forecast(LOCATION, hours=hours)
+
+    # Add temporal features
     future_weather['hour'] = future_weather.index.hour
     future_weather['day_of_week'] = future_weather.index.dayofweek
     future_weather['month'] = future_weather.index.month
     future_weather['is_weekend'] = future_weather['day_of_week'].isin([5,6]).astype(int)
 
+    # Initialize lags from last historical row
     last_row = df_hist.iloc[-1]
-
     lag_1 = last_row['price_eur_mwh']
     lag_2 = last_row['price_lag_1']
     lag_3 = last_row['price_lag_2']
-
     rolling_96 = list(df_hist['price_eur_mwh'].iloc[-96:])
     ma_3 = last_row['price_ma_3']
 
@@ -235,6 +269,7 @@ def predict_future_2days_iterative(model,df_hist):
         pred = model.predict(X)[0]
         predicted_prices.append(pred)
 
+        # Update lags and rolling window
         lag_3, lag_2, lag_1 = lag_2, lag_1, pred
         rolling_96.append(pred)
         if len(rolling_96) > 96:
