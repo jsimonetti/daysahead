@@ -8,8 +8,11 @@ Quarterly Electricity Price Prediction for the Netherlands
 - Predicted prices shown in EUR/kWh
 """
 
-import pandas as pd
 import warnings
+import os
+from datetime import datetime, timedelta
+
+import pandas as pd
 from entsoe import EntsoePandasClient
 import knmi
 import meteoserver.weatherforecast as meteo
@@ -17,8 +20,6 @@ import lightgbm as lgb
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_absolute_error
 import joblib
-import os
-from datetime import datetime, timedelta
 import tzlocal
 
 warnings.filterwarnings("ignore")
@@ -41,6 +42,7 @@ STATION_CODE = 260  # De Bilt
 MODEL_FILE = "nl_price_model_quarterly.pkl"
 CACHE_FILE = "nl_entsoe_knmi_merged.parquet"
 FORECAST_CACHE_FILE = "nl_meteoserver_forecast.parquet"
+WEEKS_TO_FETCH = 5
 
 # ------------------------
 # 2. Data Loading Functions
@@ -58,7 +60,7 @@ def fetch_entsoe_prices_quarterly(api_key, country_code, start, end):
     return prices
 
 def fetch_knmi_weather_quarterly(station, start, end):
-    print("Fetching KNMI historical data...")
+    print("Fetching KNMI data from", start, "to", end, "...")
     df_daily = knmi.get_day_data_dataframe(
         stations=[station],
         start=start,
@@ -98,8 +100,8 @@ def load_and_merge_data_quarterly(cache_file=CACHE_FILE, timezone="Europe/Amster
     today_entso = pd.Timestamp.today(tz=timezone)
     today_knmi = datetime.today().strftime("%Y%m%d")
 
-    start_entsoe = pd.Timestamp.today(tz=timezone) - pd.Timedelta(days=30)
-    start_knmi = (datetime.today() - timedelta(days=30)).strftime("%Y%m%d")
+    start_entsoe = pd.Timestamp.today(tz=timezone) - pd.Timedelta(weeks=WEEKS_TO_FETCH)
+    start_knmi = (datetime.today() - timedelta(weeks=WEEKS_TO_FETCH)).strftime("%Y%m%d")
 
     prices = fetch_entsoe_prices_quarterly(ENTSOE_API_KEY, COUNTRY_CODE, start_entsoe, today_entso)
     weather = fetch_knmi_weather_quarterly(STATION_CODE, start_knmi, today_knmi)
@@ -144,7 +146,7 @@ def train_model_quarterly(df):
     X = df[feature_cols]
     y = df['price_eur_mwh']
 
-    tscv = TimeSeriesSplit(n_splits=10)
+    tscv = TimeSeriesSplit(n_splits=WEEKS_TO_FETCH)
     maes = []
 
     for train_idx, test_idx in tscv.split(X):
@@ -222,6 +224,7 @@ def fetch_meteoserver_forecast(location, hours=48, cache_file=FORECAST_CACHE_FIL
     forecast_df.to_parquet(cache_file)
     forecast_df =  normalize_to_utc(forecast_df)
     print(f"Forecast saved to cache: {cache_file}")
+    print(forecast_df.tail())
 
     return forecast_df
 
