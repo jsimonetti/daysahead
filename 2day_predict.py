@@ -46,7 +46,7 @@ FORECAST_CACHE_FILE = "nl_meteoserver_forecast.parquet"
 # 2. Data Loading Functions
 # ------------------------
 def fetch_entsoe_prices_quarterly(api_key, country_code, start, end):
-    print("Fetching ENTSO-E historical data...")
+    print("Fetching ENTSO-E data from", start, "to", end, "...")
     client = EntsoePandasClient(api_key=api_key)
     prices = client.query_day_ahead_prices(country_code, start=start, end=end)
     prices = prices.rename("price_eur_mwh").to_frame()
@@ -239,14 +239,12 @@ def predict_future_2days_with_actuals(model, df_hist, hours=48, timezone=tzlocal
     future_weather['month'] = future_weather.index.month
     future_weather['is_weekend'] = future_weather['day_of_week'].isin([5,6]).astype(int)
 
-    # Actual day-ahead prices for first 24 hours
+    # Actual day-ahead prices 
     start_da = future_weather.index.min()
-    end_da = start_da + pd.Timedelta(hours=24)
+    end_da = start_da + pd.Timedelta(hours=48)
     # Ensure start and end are timezone-aware
-    if start_da.tzinfo is None:
-        start_da = start_da.tz_localize(timezone)
-    if end_da.tzinfo is None:
-        end_da = end_da.tz_localize(timezone)
+    start_da = start_da.tz_convert(timezone)
+    end_da = end_da.tz_convert(timezone)
 
     actual_prices = fetch_entsoe_prices_quarterly(
         ENTSOE_API_KEY, COUNTRY_CODE, start=start_da, end=end_da
