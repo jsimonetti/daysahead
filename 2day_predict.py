@@ -114,7 +114,7 @@ def load_day_ahead(start_da, end_da, cache_file=DAY_AHEAD_CACHE_FILE):
     actual_prices = load_or_invalidate_parquet(cache_file, max_age_hours=12)
     # Check if cache read was successful
     if actual_prices is not None:
-        return actual_prices
+        return actual_prices.iloc[:, 0]
     
     actual_prices = fetch_entsoe_prices_quarterly(
         ENTSOE_API_KEY, COUNTRY_CODE, start=start_da, end=end_da

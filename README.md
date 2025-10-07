@@ -28,14 +28,16 @@ The script performs the following:
 - **Feature Engineering**
   - Lagged prices (`price_lag_1`, `price_lag_2`, `price_lag_3`, `price_lag_96`)
   - Rolling statistics (`price_ma_3`, `price_ma_96`, `price_std_96`)
-  - Temporal features: `hour`, `day_of_week`, `month`, `is_weekend`
+  - Temporal features: `hour`, `day_of_week`, `month`, `is_weekend`, `is_holiday`
   - Weather features: temperature, precipitation, wind speed, sunshine
 - **Modeling**
   - LightGBM Regressor with time-series cross-validation
 - **Caching**
   - Historical merged data cached in `nl_entsoe_knmi_merged.parquet`
   - Meteoserver forecast cached in `nl_meteoserver_forecast.parquet`
+  - Day ahead cached in `nl_day_ahead.parquet`
   - Reduces repeated API calls and speeds up testing
+  - Cache is automatically invalidated after 12 hours
 - **Output**
   - Forecast CSV: `nl_price_forecast_2days_quarterly.csv`
   - Trained LightGBM model: `nl_price_model_quarterly.pkl`
