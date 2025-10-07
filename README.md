@@ -63,13 +63,11 @@ Before running the script, you need to set the following environment variables:
 |----------|-------------|
 | `ENTSOE_API_KEY` | Your API key for ENTSO-E to fetch day-ahead electricity prices. |
 | `METEOSERVER_API_KEY` | Your API key for Meteoserver to fetch weather forecasts. |
-| `LOCATION` | City near your target location (e.g., `"Amsterdam"`), used for weather forecasts. |
 
 Example (Linux/macOS):
 ```bash
 export ENTSOE_API_KEY="your_entsoe_api_key"
 export METEOSERVER_API_KEY="your_meteoserver_api_key"
-export LOCATION="Amsterdam"
 ```
 
 ## Usage
