@@ -215,15 +215,33 @@ def train_model_quarterly(df):
     #    preds = model.predict(X_test)
     #    maes.append(mean_absolute_error(y_test, preds))
 
-    final_model = lgb.LGBMRegressor(
-        n_estimators=1000,
-        learning_rate=0.05,
-        min_gain_to_split=0.0,
-        min_child_samples=5,
-        max_depth=7,
-        random_state=42,
-        verbose=-1
-    )
+    params = {
+        'objective': 'regression',
+        'num_leaves': 40,
+        'feature_fraction': 0.8,
+        'bagging_fraction': 0.8,
+        'bagging_freq': 5,
+
+        'learning_rate': 0.05,
+        'n_estimators': 1000,
+        'min_data_in_leaf': 50,
+            #'min_gain_to_split':0.0,
+            #'min_child_samples':5,
+            #'max_depth':7,
+            #'random_state':42,
+            'verbose': -1
+    }
+    final_model = lgb.LGBMRegressor(**params)
+
+    #final_model = lgb.LGBMRegressor(
+    #    n_estimators=1000,
+    #    learning_rate=0.05,
+    #    min_gain_to_split=0.0,
+    #    min_child_samples=5,
+    #    max_depth=7,
+    #    random_state=42,
+    #    verbose=-1
+    #)
 
     # Define weights — more recent → higher weight
     n = len(X)
