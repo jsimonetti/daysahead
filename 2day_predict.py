@@ -64,7 +64,7 @@ def fetch_entsoe_prices_quarterly(api_key, country_code, start, end):
 
     return prices
 
-def fetch_knmi_weather_quarterly2(station, start, end):
+def fetch_knmi_weather_quarterly(station, start, end):
     print("Fetching KNMI data from", start, "to", end, "...")
     df_hourly = knmi.get_hour_data_dataframe(
         stations=[station],
@@ -76,13 +76,16 @@ def fetch_knmi_weather_quarterly2(station, start, end):
     df_hourly["RH"] = df_hourly["RH"] / 10.0 # conver to mm
     df_hourly["FH"] = df_hourly["FH"] / 10.0 # convert to m/s
     df_hourly = df_hourly.rename(columns={
-        "T": "temperature",
-        "RH": "precipitation",
+        "T": "temperature", # in °C
+        "RH": "precipitation",  # in mm
         "Q": "sun_radiation", # in J/cm2
-        "FH": "wind_speed"
+        "FH": "wind_speed" # in m/s
     })
 
-def fetch_knmi_weather_quarterly(station, start, end):
+    df_hourly = normalize_to_utc(df_hourly)
+    return df_hourly.asfreq(pd.tseries.offsets.Minute(15),'ffill')
+
+def fetch_knmi_weather_quarterlyOrg(station, start, end):
     print("Fetching KNMI data from", start, "to", end, "...")
     df_daily = knmi.get_day_data_dataframe(
         stations=[station],
@@ -94,10 +97,10 @@ def fetch_knmi_weather_quarterly(station, start, end):
     df_daily["RH"] = df_daily["RH"] / 10.0 # conver to mm
     df_daily["FHX"] = df_daily["FHX"] / 10.0 # convert to m/s
     df_daily = df_daily.rename(columns={
-        "TX": "temperature",
-        "RH": "precipitation",
+        "TX": "temperature", # in °C
+        "RH": "precipitation", # in mm
         "Q": "sun_radiation", # in J/cm2
-        "FHX": "wind_speed"
+        "FHX": "wind_speed" # in m/s
     })
 
     df_hourly = pd.DataFrame(
@@ -119,6 +122,8 @@ def load_day_ahead(start_da, end_da, cache_file=DAY_AHEAD_CACHE_FILE):
     actual_prices = fetch_entsoe_prices_quarterly(
         ENTSOE_API_KEY, COUNTRY_CODE, start=start_da, end=end_da
     ).asfreq(pd.tseries.offsets.Minute(15),'ffill')['price_eur_mwh']
+
+    actual_prices = normalize_to_utc(actual_prices) 
 
     actual_prices.to_frame().to_parquet(cache_file)
     print(f"Data saved to cache: {cache_file}")
@@ -182,11 +187,10 @@ def train_model_quarterly(df):
     print("Training model...")
     feature_cols = [
         "temperature", "precipitation", "sun_radiation", "wind_speed",
-        "season", "day_of_week", "is_weekend",
+        "season", "day_of_week", "is_holiday", "hour", "is_weekend",
         "price_lag_1", "price_lag_2", "price_lag_3", "price_lag_96",
         "price_ma_3", "price_ma_96", "price_std_96"
     ]
-    # "is_holiday", "hour",
 
     X = df[feature_cols]
     y = df['price_eur_mwh']
@@ -239,7 +243,8 @@ def train_model_quarterly(df):
 # 4. Fetch Meteoserver GFS Forecast
 # ------------------------
 def fetch_meteoserver_forecast(location, hours=48, cache_file=FORECAST_CACHE_FILE):
-    forecast_df = load_or_invalidate_parquet(cache_file, max_age_hours=12)
+    # Nieuwe data in deze API zijn beschikbaar om 5:30, 11:30, 17:30 en 23:30 Nederlandse tijd.
+    forecast_df = load_or_invalidate_parquet(cache_file, max_age_hours=8)
     # Check if cache read was successful
     if forecast_df is not None:
         # Filter only the next `hours` for consistency
@@ -259,17 +264,16 @@ def fetch_meteoserver_forecast(location, hours=48, cache_file=FORECAST_CACHE_FIL
     forecast_df = forecast_df[forecast_df.index <= pd.Timestamp.now() + pd.Timedelta(hours=hours)]
 
     forecast_df = forecast_df.rename(columns={
-        'temp': 'temperature',
-        'neersl': 'precipitation',
-        'windkmh': 'wind_speed',
-        'gr': 'sun_radiation'
-    })
-    
+        'temp': 'temperature', # °C
+        'neersl': 'precipitation', # mm
+        'winds': 'wind_speed', # m/sec
+        'gr': 'sun_radiation' # J/cm2
+    })[['temperature', 'precipitation', 'wind_speed', 'sun_radiation']]
 
-    for col in ["temperature", "precipitation", "wind_speed", "sun_radiation"]:
-        if col not in forecast_df.columns:
-            forecast_df[col] = 0
-        forecast_df[col] = pd.to_numeric(forecast_df[col], errors='coerce')
+    forecast_df['temperature'] = pd.to_numeric(forecast_df['temperature'])
+    forecast_df['precipitation'] = pd.to_numeric(forecast_df['precipitation'])
+    forecast_df['sun_radiation'] = pd.to_numeric(forecast_df['sun_radiation'])
+    forecast_df['wind_speed'] = pd.to_numeric(forecast_df['wind_speed'])
 
     forecast_df = forecast_df[['temperature', 'precipitation', 'wind_speed', 'sun_radiation']].iloc[:hours].asfreq(pd.tseries.offsets.Minute(15),'ffill')
 
@@ -334,9 +338,9 @@ def predict_future_2days_with_actuals(model, df_hist, hours=48, timezone=tzlocal
                 "sun_radiation": row['sun_radiation'],
                 "wind_speed": row['wind_speed'],
                 "day_of_week": row['day_of_week'],
-                #"hour": row['hour'],
+                "hour": row['hour'],
                 "season": row['season'],
-                #"is_holiday": row['is_holiday'],
+                "is_holiday": row['is_holiday'],
                 "is_weekend": row['is_weekend'],
                 "price_lag_1": lag_1,
                 "price_lag_2": lag_2,
