@@ -467,6 +467,10 @@ def load_or_invalidate_parquet(path, max_age_hours=12):
 # 6. Main Function
 # ------------------------
 def main():
+    quarterly = "15T"
+    hourly = "1H"
+    resample = quarterly  # Change to `hourly` for hourly model
+
     # Load historical data
     df = load_and_merge_data_quarterly()
     print(f"Loaded dataset with {len(df)} entries.")
