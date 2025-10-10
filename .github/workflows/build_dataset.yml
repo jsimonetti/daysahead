@@ -25,5 +25,24 @@ jobs:
           pip install pandas tzlocal requests
 
       - name: Run nightly CI script
+        env:
+          METEO_KEY: ${{ secrets.METEO_KEY }}  # Inject secret into environment
         run: |
           python data/ci.py
+  
+      - name: Configure Git for commit
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit and push updated data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git add -A
+          if git diff --cached --quiet; then
+            echo "✅ No changes to commit."
+          else
+            git commit -m "🤖 Nightly data update ($(date -u '+%Y-%m-%d %H:%M:%S UTC'))"
+            git push https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }} HEAD:${{ github.ref }}
+          fi

@@ -11,8 +11,8 @@ LOCATION = "Hoek van Holland"
 
 def main():
     df = meteoserver.get(LOCATION, KEY)
+    df = dataset.merge_with_parquet(df, "data.parquet", new=True)
     print(df)
-    combined = dataset.merge_with_parquet(df, "data.parquet", new=True)
 
 if __name__ == "__main__":
     main()
