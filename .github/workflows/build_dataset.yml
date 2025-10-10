@@ -23,13 +23,12 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas tzlocal requests
+          pip install pandas tzlocal requests pyarrow
 
       - name: Run nightly CI script
         env:
           METEO_KEY: ${{ secrets.METEO_KEY }}  # Inject secret into environment
         run: |
-          echo $METEO_KEY
           python data/ci.py
   
       - name: Configure Git for commit
