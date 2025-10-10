@@ -40,7 +40,8 @@ def get(locatie, key, retries=3, delay=10, wanted_cols=['temperature', 'precipit
                 })
                 return data[wanted_cols] if wanted_cols else data
             else:
-                print("⚠️ No 'uur_verw' field found in response.")
+                print(response.text)
+                print("⚠️ No 'data' field found in response.")
                 return None
 
         except requests.RequestException as e:
