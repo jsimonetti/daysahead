@@ -34,7 +34,7 @@ jobs:
       - name: Configure Git for commit
         run: |
           rm -rf data/__pycache__
-          git add -f data/data.parquet
+          git add -f data/forcast.parquet
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
