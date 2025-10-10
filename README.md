@@ -1,97 +1,116 @@
-# Netherlands Electricity Price Forecast
+# ⚡ DaysAhead: Dutch Electricity Price Forecasting
 
-This repository contains a Python script for predicting **day-ahead electricity prices in the Netherlands** using historical electricity and weather data. The model leverages **LightGBM** regression and uses both **historical** and **forecasted weather data** for short-term predictions. The workflow includes caching to reduce repeated API calls and accelerate repeated runs.
-
----
-
-## Description
-
-The script performs the following:
-
-- Fetches **historical electricity prices** from ENTSO-E.
-- Retrieves **historical weather data** from KNMI.
-- Uses **Meteoserver GFS forecasts** for the next 48 hours.
-- Performs **feature engineering**, including lagged prices, rolling statistics, and temporal features.
-- Trains a **LightGBM regression model** using time-series cross-validation.
-- Predicts **short-term electricity prices** in EUR/kWh for the next 48 hours.
-- Caches both historical and forecast data to avoid repeated API calls for development purposes.
+**DaysAhead** is a machine learning project designed to predict **Dutch electricity prices** up to **48 hours into the future**.  
+The code leverages historical energy market data and ML modeling techniques to forecast short-term price fluctuations. The project was started to help with determining strategies for the https://github.com/corneel27/day-ahead project.
 
 ---
 
-## Features
+## 📊 Project Overview
 
-- **Historical Data Sources**
-  - ENTSO-E Day-Ahead Prices (quarterly, pre 15min data is forward filled)
-  - KNMI Historical Weather Data (hourly, forward filled)
-- **Forecast Data**
-  - Meteoserver GFS 48-hour Forecast (hourly, forward filled)
-- **Feature Engineering**
-  - Lagged prices (`price_lag_1`, `price_lag_2`, `price_lag_3`, `price_lag_96`)
-  - Rolling statistics (`price_ma_3`, `price_ma_96`, `price_std_96`)
-  - Temporal features: `hour`, `day_of_week`, `month`, `is_weekend`, `is_holiday`
-  - Weather features: temperature, precipitation, wind speed, sunshine
-- **Modeling**
-  - LightGBM Regressor with time-series cross-validation
-- **Caching**
-  - Historical merged data cached in `nl_entsoe_knmi_merged.parquet`
-  - Meteoserver forecast cached in `nl_meteoserver_forecast.parquet`
-  - Day ahead cached in `nl_day_ahead.parquet`
-  - Reduces repeated API calls and speeds up testing
-  - Cache is automatically invalidated after 12 hours
-- **Output**
-  - Forecast CSV: `nl_price_forecast_2days_quarterly.csv`
-  - Trained LightGBM model: `nl_price_model_quarterly.pkl`
+Electricity prices in the Netherlands (and broader European market) are highly volatile due to factors such as weather, renewable energy generation, and demand fluctuations.  
+**DaysAhead** aims to capture these dynamics using predictive modeling techniques, providing accurate forecasts for the next 48 hours.
+
+Key objectives:
+- Collect and preprocess historical Dutch electricity market data  
+- Explore price trends and correlations with external factors  
+- Train a regression model to predict future prices  
+- Evaluate model accuracy using relevant metrics (e.g., RMSE)  
+- Visualize predictions vs. actual prices
 
 ---
 
-## Installation
+## 🧠 Features
 
-To install this script, clone this repository and install required python modules.
+- ⏱ Predicts Dutch electricity prices **up to 48 hours ahead**  
+- 📈 Uses **time series forecasting** and/or **machine learning** models  
+- 🔍 Includes **data cleaning, feature engineering, and model evaluation**  
+- 💡 Provides **visual insights** into price trends and forecast performance  
+- 🧾 Fully contained in a Jupyter notebook for easy reproducibility
 
-Example (Linux/macOS):
+---
+
+## 🧰 Technologies Used
+
+| Category | Tools / Libraries |
+|-----------|------------------|
+| Language | Python |
+| Environment | Jupyter Notebook |
+| Data Processing | pandas, numpy |
+| Visualization | matplotlib, seaborn, plotly |
+| Modeling | scikit-learn, XGBoost, statsmodels (depending on implementation) |
+| Evaluation | RMSE, MAE, R² |
+
+---
+
+## 🚀 Getting Started
+
+### 1. Clone the Repository
 ```bash
-git clone https://github.com/jsimonetti/daysahead.git
+git clone https://github.com/yourusername/daysahead.git
 cd daysahead
+```
+
+### 2. Install Dependencies
+It’s recommended to use a virtual environment:
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip3 install -r requirements.txt
+pip install -r requirements.txt
 ```
 
-## Required Environment Variables
-
-Before running the script, you need to set the following environment variables:
-
-| Variable | Description |
-|----------|-------------|
-| `ENTSOE_API_KEY` | Your API key for ENTSO-E to fetch day-ahead electricity prices. |
-| `METEOSERVER_API_KEY` | Your API key for Meteoserver to fetch weather forecasts. |
-
-Example (Linux/macOS):
+### 3. Run the Notebook
+Open Jupyter and execute:
 ```bash
-export ENTSOE_API_KEY="your_entsoe_api_key"
-export METEOSERVER_API_KEY="your_meteoserver_api_key"
+jupyter notebook daysahead.ipynb
 ```
 
-## Usage
+---
 
-1.	Run the script
-```bash
-python3 nl_price_forecast_quarterly.py
+## 📈 Example Output
+
+The notebook outputs:
+- Forecast plots comparing predicted vs. actual electricity prices  
+- Evaluation metrics for forecast accuracy  
+- (Optional) Interactive visualizations for exploring trends
+
+---
+
+## 🧩 Project Structure
+
 ```
-2.	Outputs
-- nl_price_model_quarterly.pkl → Trained LightGBM model
-- nl_price_forecast_2days_quarterly.csv → 48-hour forecast in EUR/kWh
-- Cached data files (.parquet) for faster subsequent runs
-3.	Caching
-- nl_entsoe_knmi_merged.parquet → historical electricity + weather data
-- nl_meteoserver_forecast.parquet → 48-hour weather forecast
+daysahead/
+│
+├── daysahead.ipynb           # Main notebook with data prep, model, and results
+├── 2day_predict.py           # Example usage
+├── features.py               # Adding features
+├── daysahead_xgb_model.json  # trained model, ready for usage
+├── requirements.txt          # Project dependencies
+└── README.md                 # Project documentation
+```
 
-## Notes
-- Forecasts are short-term (next 48 hours) using iterative predictions.
-- Lagged prices and rolling statistics are used to capture recent trends.
-- Temporal features capture hourly, daily, and weekly seasonality.
-- Caching ensures offline testing is possible after the first run.
+---
 
-## License
+## 🤝 Contributing
 
-This project is licensed under the MIT License. See LICENSE for details.
+Contributions are welcome!  
+If you’d like to improve the model or add new features:
+1. Fork the repository  
+2. Create a new branch  
+3. Submit a pull request  
+
+---
+
+## 🪪 License
+
+This project is licensed under the **MIT License** – see the [LICENSE](LICENSE) file for details.
+
+---
+
+## 👤 Author
+
+Jeroen Simonetti  
+🔗 [GitHub](https://github.com/jsimonetti)
+
+---
+
+> *Forecast day after tomorrow’s power prices today – with DaysAhead ⚡*
