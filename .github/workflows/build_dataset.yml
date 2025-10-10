@@ -29,6 +29,7 @@ jobs:
         env:
           METEO_KEY: ${{ secrets.METEO_KEY }}  # Inject secret into environment
         run: |
+          echo $METEO_KEY
           python data/ci.py
   
       - name: Configure Git for commit
