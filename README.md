@@ -63,6 +63,10 @@ Open Jupyter and execute:
 ```bash
 jupyter notebook daysahead.ipynb
 ```
+Or when running on a remote machine:
+```
+jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser
+```
 
 ---
 
