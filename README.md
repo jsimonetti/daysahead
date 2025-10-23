@@ -46,7 +46,7 @@ Key objectives:
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/yourusername/daysahead.git
+git clone https://github.com/jsimonetti/daysahead.git
 cd daysahead
 ```
 
