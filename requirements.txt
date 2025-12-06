@@ -16,7 +16,7 @@ sklearn==0.0
 threadpoolctl==3.5.0
 tzdata==2025.2
 tzlocal==5.3.1
-urllib3==2.5.0
+urllib3==2.6.0
 xgboost==2.1.4
 matplotlib==3.9.2
 seaborn==0.13.2
