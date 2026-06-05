@@ -5,7 +5,7 @@ joblib==1.5.2
 meteoserver==0.0.19
 numpy==1.26.4
 pandas==2.2.3
-pyarrow==17.0.0
+pyarrow==23.0.1
 python-dateutil==2.9.0.post0
 pytz==2025.2
 requests==2.33.0
