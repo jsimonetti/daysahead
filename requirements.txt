@@ -1,6 +1,6 @@
 certifi==2025.10.5
 charset-normalizer==3.3.2
-idna==3.8
+idna==3.15
 joblib==1.5.2
 meteoserver==0.0.19
 numpy==1.26.4
